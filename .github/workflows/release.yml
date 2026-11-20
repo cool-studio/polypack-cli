@@ -1,0 +1,36 @@
+# Builds and publishes a release when a v* tag arrives (pushed by PolyPack's
+# split workflow, from a cli-v* tag there). Lives in cli/.github/workflows/ in
+# PolyPack's repository; edit it there.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./... && go test ./...
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"; arch="${target#*/}"; ext=""
+            [ "$os" = windows ] && ext=".exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/polypack-$os-$arch$ext" .
+          done
+          (cd dist && sha256sum polypack-* > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "polypack $GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,24 @@
+# The public repository's CI (cool-studio/polypack-cli). This file lives in
+# cli/.github/workflows/ in PolyPack's repository and arrives here with each
+# split; edit it there.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
