@@ -1,0 +1,50 @@
+name: Set up PolyPack
+description: Publish to PolyPack from GitHub Actions with trusted publishing, no stored Token
+author: Cool Studio
+branding:
+  icon: package
+  color: red
+
+inputs:
+  team:
+    description: Your Team's slug, as in {team}.pkg.polypack.io
+    required: true
+  pack:
+    description: The Pack to publish, e.g. @hopper/ui (npm) or api (an image)
+    required: true
+  registry:
+    description: The npm Registry's URL, for an instance other than polypack.io (default https://{team}.pkg.polypack.io/npm/)
+    required: false
+    default: ''
+  oci:
+    description: The OCI Registry's URL, for an instance other than polypack.io (default https://{team}.cr.polypack.io)
+    required: false
+    default: ''
+  cli-version:
+    description: The polypack CLI release to use; by default this action's own version, else the latest
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install the polypack CLI
+      shell: bash
+      env:
+        POLYPACK_VERSION: ${{ inputs.cli-version || (startsWith(github.action_ref, 'v') && github.action_ref) || 'latest' }}
+        POLYPACK_INSTALL_DIR: ${{ runner.temp }}/polypack-bin
+      run: |
+        sh "$GITHUB_ACTION_PATH/install.sh"
+        echo "$POLYPACK_INSTALL_DIR" >> "$GITHUB_PATH"
+    - name: Exchange GitHub's ID token for a Publisher Token
+      shell: bash
+      env:
+        POLYPACK_TEAM: ${{ inputs.team }}
+        POLYPACK_PACK: ${{ inputs.pack }}
+        POLYPACK_REGISTRY: ${{ inputs.registry }}
+        POLYPACK_OCI: ${{ inputs.oci }}
+      run: |
+        args=(ci "$POLYPACK_PACK" --team "$POLYPACK_TEAM")
+        if [ -n "$POLYPACK_REGISTRY" ]; then args+=(--registry "$POLYPACK_REGISTRY"); fi
+        if [ -n "$POLYPACK_OCI" ]; then args+=(--oci "$POLYPACK_OCI"); fi
+        "$RUNNER_TEMP/polypack-bin/polypack" "${args[@]}"

@@ -19,6 +19,7 @@ Usage:
   polypack whoami
   polypack logout [--team SLUG]
   polypack verify npm @scope/name@version | oci name:tag [--team SLUG]
+  polypack ci <pack> --team SLUG     (in GitHub Actions: trusted publishing)
   polypack version
 
 The host is https://polypack.io unless --host or POLYPACK_HOST says otherwise.
@@ -47,6 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdLogout(args[1:], stdout, stderr)
 	case "verify":
 		err = cmdVerify(args[1:], stdout, stderr)
+	case "ci":
+		err = cmdCI(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "polypack %s\n", version)
 	case "help", "--help", "-h":

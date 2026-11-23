@@ -40,6 +40,7 @@ against `SHA256SUMS`.
 | `polypack setup [--npm] [--composer] [--docker]` | Sets up npm, Composer and docker again, for each Team you are signed in to; name any of them to set up only those |
 | `polypack whoami` | Who each Team's Token belongs to |
 | `polypack logout [--team SLUG]` | Revokes the Token and removes what `setup` wrote |
+| `polypack ci <pack> --team SLUG` | In GitHub Actions (`id-token: write`): exchanges GitHub's ID token for a Token that publishes that one Pack, and sets npm, or docker and helm, up with it. Fails with PolyPack's reason. The action below runs it |
 | `polypack verify npm @scope/name@version` / `polypack verify oci name:tag` `[--team SLUG]` | Checks a Version's provenance: PolyPack's signature, and that the registry serves what was published. Prints the repository, commit, workflow and run it came from |
 | `polypack version` | The version |
 
@@ -61,3 +62,29 @@ changes there. You need Go and nothing else (the standard library only):
 go vet ./... && go test ./...
 go build -ldflags "-X main.version=dev" -o polypack .
 ```
+
+## GitHub Action
+
+Publish to PolyPack from GitHub Actions with trusted publishing: no PolyPack
+Token stored in GitHub. Add a trusted publisher to the Pack in PolyPack, then:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+steps:
+  - uses: actions/checkout@v7
+  - uses: actions/setup-node@v7
+    with:
+      node-version: 24
+  - uses: cool-studio/polypack-cli@v0.4.0
+    with:
+      team: hopper
+      pack: '@hopper/ui'   # or an image, e.g. api
+  - run: npm publish     # or docker build and docker push
+```
+
+Inputs: `team`, `pack`, and, for an instance other than polypack.io,
+`registry` and `oci`. It installs this CLI (its own version) and runs
+`polypack ci`.
+
