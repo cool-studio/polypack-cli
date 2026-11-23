@@ -37,7 +37,7 @@ against `SHA256SUMS`.
 | Command | What it does |
 |---|---|
 | `polypack login [--name NAME] [--no-setup]` | Signs this machine in through the browser, then runs `setup` |
-| `polypack setup [--no-npm] [--no-composer] [--no-docker]` | Sets up npm, Composer and docker again, for each Team you are signed in to |
+| `polypack setup [--npm] [--composer] [--docker]` | Sets up npm, Composer and docker again, for each Team you are signed in to; name any of them to set up only those |
 | `polypack whoami` | Who each Team's Token belongs to |
 | `polypack logout [--team SLUG]` | Revokes the Token and removes what `setup` wrote |
 | `polypack version` | The version |

@@ -85,11 +85,16 @@ type setupOptions struct{ npm, composer, docker bool }
 func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	noNPM := flags.Bool("no-npm", false, "leave npm alone")
-	noComposer := flags.Bool("no-composer", false, "leave Composer alone")
-	noDocker := flags.Bool("no-docker", false, "leave docker alone")
+	npm := flags.Bool("npm", false, "set up npm")
+	composer := flags.Bool("composer", false, "set up Composer")
+	docker := flags.Bool("docker", false, "set up docker")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	// Naming any of them sets up only those; naming none sets up all three.
+	options := setupOptions{npm: *npm, composer: *composer, docker: *docker}
+	if options == (setupOptions{}) {
+		options = setupOptions{npm: true, composer: true, docker: true}
 	}
 	config, err := loadConfig()
 	if err != nil {
@@ -98,7 +103,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	if len(config.Teams) == 0 {
 		return errors.New("not signed in: run polypack login first")
 	}
-	options := setupOptions{npm: !*noNPM, composer: !*noComposer, docker: !*noDocker}
 	for _, slug := range config.slugs() {
 		if err := setupTeam(slug, config.Teams[slug], options, stdout, stderr); err != nil {
 			return err

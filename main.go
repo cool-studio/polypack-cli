@@ -15,7 +15,7 @@ const usage = `polypack: sign this machine in to PolyPack and set up its package
 
 Usage:
   polypack login [--host URL] [--name NAME] [--no-setup]
-  polypack setup [--no-npm] [--no-composer] [--no-docker]
+  polypack setup [--npm] [--composer] [--docker]
   polypack whoami
   polypack logout [--team SLUG]
   polypack version

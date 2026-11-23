@@ -123,6 +123,49 @@ func TestLoginSetupWhoamiLogout(t *testing.T) {
 	}
 }
 
+func TestSetupOnlyWhatIsNamed(t *testing.T) {
+	server, _ := fakePolyPack(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("POLYPACK_CONFIG", filepath.Join(home, "polypack.json"))
+	t.Setenv("npm_config_userconfig", filepath.Join(home, ".npmrc"))
+	t.Setenv("COMPOSER_HOME", filepath.Join(home, "composer"))
+	t.Setenv("POLYPACK_NO_BROWSER", "1")
+	t.Setenv("PATH", "")
+	slowDownStep = time.Millisecond
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"login", "--host", server.URL, "--name", "test box", "--no-setup"}, &out, &errOut); code != 0 {
+		t.Fatalf("login exited %d: %s", code, errOut.String())
+	}
+	npmrc := filepath.Join(home, ".npmrc")
+	authJSON := filepath.Join(home, "composer", "auth.json")
+
+	// --composer alone: auth.json, and no .npmrc.
+	if code := run([]string{"setup", "--composer"}, &out, &errOut); code != 0 {
+		t.Fatalf("setup --composer exited %d: %s", code, errOut.String())
+	}
+	if _, err := os.Stat(authJSON); err != nil {
+		t.Fatalf("setup --composer wrote no auth.json: %v", err)
+	}
+	if _, err := os.Stat(npmrc); !os.IsNotExist(err) {
+		t.Fatal("setup --composer wrote .npmrc")
+	}
+
+	// No flags: all of them.
+	if code := run([]string{"setup"}, &out, &errOut); code != 0 {
+		t.Fatalf("setup exited %d: %s", code, errOut.String())
+	}
+	if content, _ := os.ReadFile(npmrc); !strings.Contains(string(content), ":_authToken=polypack_secret") {
+		t.Fatalf("setup with no flags left .npmrc:\n%s", content)
+	}
+
+	// The old opt-out flags are gone.
+	if code := run([]string{"setup", "--no-docker"}, &out, &errOut); code == 0 {
+		t.Fatal("setup --no-docker was accepted")
+	}
+}
+
 func TestLoginReportsADenial(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cli/v1/device", func(w http.ResponseWriter, r *http.Request) {
