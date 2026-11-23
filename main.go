@@ -18,6 +18,7 @@ Usage:
   polypack setup [--npm] [--composer] [--docker]
   polypack whoami
   polypack logout [--team SLUG]
+  polypack verify npm @scope/name@version | oci name:tag [--team SLUG]
   polypack version
 
 The host is https://polypack.io unless --host or POLYPACK_HOST says otherwise.
@@ -44,6 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdWhoami(args[1:], stdout)
 	case "logout":
 		err = cmdLogout(args[1:], stdout, stderr)
+	case "verify":
+		err = cmdVerify(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "polypack %s\n", version)
 	case "help", "--help", "-h":

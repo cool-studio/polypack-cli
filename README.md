@@ -40,6 +40,7 @@ against `SHA256SUMS`.
 | `polypack setup [--npm] [--composer] [--docker]` | Sets up npm, Composer and docker again, for each Team you are signed in to; name any of them to set up only those |
 | `polypack whoami` | Who each Team's Token belongs to |
 | `polypack logout [--team SLUG]` | Revokes the Token and removes what `setup` wrote |
+| `polypack verify npm @scope/name@version` / `polypack verify oci name:tag` `[--team SLUG]` | Checks a Version's provenance: PolyPack's signature, and that the registry serves what was published. Prints the repository, commit, workflow and run it came from |
 | `polypack version` | The version |
 
 The Token appears under **My Tokens** in PolyPack as "CLI on {machine}", and
