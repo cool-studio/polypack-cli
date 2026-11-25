@@ -283,7 +283,7 @@ func isTerminal(w io.Writer) bool {
 
 // Commands after which the notice may appear; never ci, update or help.
 var noticeCommands = map[string]bool{
-	"login": true, "setup": true, "whoami": true, "logout": true, "verify": true, "version": true,
+	"login": true, "setup": true, "doctor": true, "whoami": true, "logout": true, "verify": true, "version": true,
 }
 
 func noticeWanted(command string, stderr io.Writer) bool {

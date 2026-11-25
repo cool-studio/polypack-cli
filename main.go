@@ -20,6 +20,7 @@ Usage:
   polypack logout [--team SLUG]
   polypack verify npm @scope/name@version | oci name:tag [--team SLUG]
   polypack ci <pack> --team SLUG     (in GitHub Actions: trusted publishing)
+  polypack doctor [--team SLUG]     (check npm, Composer and docker here)
   polypack update [--version vX.Y.Z]
   polypack version
 
@@ -55,6 +56,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdVerify(args[1:], stdout, stderr)
 	case "ci":
 		err = cmdCI(args[1:], stdout, stderr)
+	case "doctor":
+		err = cmdDoctor(args[1:], stdout, stderr)
 	case "update":
 		err = cmdUpdate(args[1:], stdout, stderr)
 	case "version", "--version", "-v":

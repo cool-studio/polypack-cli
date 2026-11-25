@@ -42,6 +42,7 @@ against `SHA256SUMS`.
 | `polypack logout [--team SLUG]` | Revokes the Token and removes what `setup` wrote |
 | `polypack ci <pack> --team SLUG` | In GitHub Actions (`id-token: write`): exchanges GitHub's ID token for a Token that publishes that one Pack, and sets npm, or docker and helm, up with it. Fails with PolyPack's reason. The action below runs it |
 | `polypack verify npm @scope/name@version` / `polypack verify oci name:tag` `[--team SLUG]` | Checks a Version's provenance: PolyPack's signature, and that the registry serves what was published. Prints the repository, commit, workflow and run it came from |
+| `polypack doctor [--team SLUG]` | Checks what npm, Composer and docker send to each Team's hosts, here and in this project, asks each host about each Token, and says what to fix. It changes nothing, and never prints a Token |
 | `polypack update [--version vX.Y.Z]` | Replaces this binary with the latest release (or the one named), checked against the release's `SHA256SUMS` |
 | `polypack version` | The version |
 
@@ -49,6 +50,31 @@ The Token appears under **My Tokens** in PolyPack as "CLI on {machine}", and
 you can revoke it there at any time. The CLI keeps its settings in
 `~/.config/polypack/config.json` (your platform's config directory), readable
 only by you.
+
+## When an install fails
+
+```sh
+polypack doctor
+```
+
+For each Team you are signed in to, and any PolyPack registry your npm or
+Composer config points at, it checks:
+
+- that the Team's hosts answer;
+- **npm**: which registry each of the Team's scopes installs from (this
+  project's `.npmrc` first, then yours), and the Token npm sends there,
+  `${VARIABLES}` included;
+- **Composer**: the Token it sends (this project's `auth.json`,
+  `COMPOSER_AUTH`, or your global `auth.json`), and whether this project's
+  `composer.json` has the Team's repository;
+- **docker**: the Token in docker's config or credential helper, when your
+  Plan includes images.
+
+PolyPack says what it makes of each Token: who it belongs to, what it may do
+and until when, or why it is refused (expired, revoked, another Team's, or
+not allowed from your address). Each problem comes with the command that
+fixes it. A Token is only ever shown as `polypack_…` and its last four
+characters, as in the panel. It exits with `1` if it found a problem.
 
 ## Updating
 
