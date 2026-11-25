@@ -20,9 +20,11 @@ Usage:
   polypack logout [--team SLUG]
   polypack verify npm @scope/name@version | oci name:tag [--team SLUG]
   polypack ci <pack> --team SLUG     (in GitHub Actions: trusted publishing)
+  polypack update [--version vX.Y.Z]
   polypack version
 
 The host is https://polypack.io unless --host or POLYPACK_HOST says otherwise.
+Once a day it checks for a newer release; POLYPACK_NO_UPDATE_CHECK=1 turns that off.
 `
 
 func main() {
@@ -35,6 +37,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+
+	finish := startUpdateNotice(args[0], stderr)
+	defer finish()
 
 	var err error
 	switch args[0] {
@@ -50,6 +55,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdVerify(args[1:], stdout, stderr)
 	case "ci":
 		err = cmdCI(args[1:], stdout, stderr)
+	case "update":
+		err = cmdUpdate(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "polypack %s\n", version)
 	case "help", "--help", "-h":
