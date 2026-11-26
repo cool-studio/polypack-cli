@@ -19,7 +19,9 @@ Usage:
   polypack whoami
   polypack logout [--team SLUG]
   polypack verify npm @scope/name@version | oci name:tag [--team SLUG]
-  polypack ci <pack> --team SLUG     (in GitHub Actions: trusted publishing)
+  polypack files upload <pack>@<version> <file>... [--team SLUG] [--publish]
+  polypack files download <pack>[@<version or channel>] [--file NAME] [--out DIR]
+  polypack ci <pack> --team SLUG [--files]   (in GitHub Actions: trusted publishing)
   polypack doctor [--team SLUG]     (check npm, Composer and docker here)
   polypack update [--version vX.Y.Z]
   polypack version
@@ -54,6 +56,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdLogout(args[1:], stdout, stderr)
 	case "verify":
 		err = cmdVerify(args[1:], stdout, stderr)
+	case "files":
+		err = cmdFiles(args[1:], stdout, stderr)
 	case "ci":
 		err = cmdCI(args[1:], stdout, stderr)
 	case "doctor":

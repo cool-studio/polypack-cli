@@ -28,6 +28,7 @@ func cmdCI(args []string, stdout, stderr io.Writer) error {
 	team := flags.String("team", "", "the Team's slug, as in {team}.pkg.polypack.io")
 	registry := flags.String("registry", "", "the npm Registry's URL (default https://{team}.pkg.polypack.io/npm/)")
 	oci := flags.String("oci", "", "the OCI Registry's URL (default https://{team}.cr.polypack.io)")
+	files := flags.Bool("files", false, "a Files Pack: export POLYPACK_TOKEN for polypack files upload (step 74)")
 	pack := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		pack, args = args[0], args[1:]
@@ -39,7 +40,7 @@ func cmdCI(args []string, stdout, stderr io.Writer) error {
 		pack = flags.Arg(0)
 	}
 	if pack == "" || (*team == "" && *registry == "" && *oci == "") {
-		return errors.New("usage: polypack ci <pack> --team SLUG  (an npm Pack is @scope/name; anything else is an image)")
+		return errors.New("usage: polypack ci <pack> --team SLUG [--files]  (an npm Pack is @scope/name; --files for a Files Pack; anything else is an image)")
 	}
 	if *registry == "" {
 		*registry = "https://" + *team + ".pkg.polypack.io/npm/"
@@ -50,7 +51,7 @@ func cmdCI(args []string, stdout, stderr io.Writer) error {
 
 	npm := strings.HasPrefix(pack, "@")
 	base, err := url.Parse(*registry)
-	if !npm {
+	if !npm && !*files {
 		base, err = url.Parse(*oci)
 	}
 	if err != nil || base.Host == "" {
@@ -58,13 +59,18 @@ func cmdCI(args []string, stdout, stderr io.Writer) error {
 	}
 
 	var audience, exchange string
-	if npm {
+	switch {
+	case *files:
+		// Files (step 74): ours, on the registry host, as on the OCI host.
+		audience = "files:" + base.Hostname()
+		exchange = base.Scheme + "://" + base.Host + "/-/oidc/token/exchange/pack/" + url.PathEscape(pack)
+	case npm:
 		if !strings.Contains(pack, "/") {
 			return fmt.Errorf("%q is not @scope/name", pack)
 		}
 		audience = "npm:" + base.Hostname()
 		exchange = base.Scheme + "://" + base.Host + "/-/npm/v1/oidc/token/exchange/package/" + strings.Replace(pack, "/", "%2f", 1)
-	} else {
+	default:
 		audience = "oci:" + base.Hostname()
 		exchange = base.Scheme + "://" + base.Host + "/-/oidc/token/exchange/pack/" + pack
 	}
@@ -79,6 +85,25 @@ func cmdCI(args []string, stdout, stderr io.Writer) error {
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		fmt.Fprintf(stdout, "::add-mask::%s\n", token)
+	}
+
+	if *files {
+		// The job's later steps read it (polypack files upload), masked above.
+		if env := os.Getenv("GITHUB_ENV"); env != "" {
+			f, err := os.OpenFile(env, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+			if err != nil {
+				return fmt.Errorf("could not write GITHUB_ENV: %w", err)
+			}
+			_, err = fmt.Fprintf(f, "POLYPACK_TOKEN=%s\n", token)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return fmt.Errorf("could not write GITHUB_ENV: %w", err)
+			}
+		}
+		fmt.Fprintf(stdout, "polypack files upload can publish %s until %s (POLYPACK_TOKEN).\n", pack, expires)
+		return nil
 	}
 
 	if npm {

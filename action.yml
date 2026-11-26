@@ -10,8 +10,16 @@ inputs:
     description: Your Team's slug, as in {team}.pkg.polypack.io
     required: true
   pack:
-    description: The Pack to publish, e.g. @hopper/ui (npm) or api (an image)
+    description: The Pack to publish, e.g. @hopper/ui (npm), api (an image) or hopper-cli (a Files Pack, with files)
     required: true
+  files:
+    description: For a Files Pack, the Files to upload, e.g. dist/* (a pattern the CLI expands); the Version is then published
+    required: false
+    default: ''
+  version:
+    description: For a Files Pack, the Version to publish, e.g. the release's tag; a leading v is dropped
+    required: false
+    default: ''
   registry:
     description: The npm Registry's URL, for an instance other than polypack.io (default https://{team}.pkg.polypack.io/npm/)
     required: false
@@ -43,8 +51,29 @@ runs:
         POLYPACK_PACK: ${{ inputs.pack }}
         POLYPACK_REGISTRY: ${{ inputs.registry }}
         POLYPACK_OCI: ${{ inputs.oci }}
+        POLYPACK_FILES: ${{ inputs.files }}
       run: |
         args=(ci "$POLYPACK_PACK" --team "$POLYPACK_TEAM")
         if [ -n "$POLYPACK_REGISTRY" ]; then args+=(--registry "$POLYPACK_REGISTRY"); fi
         if [ -n "$POLYPACK_OCI" ]; then args+=(--oci "$POLYPACK_OCI"); fi
+        if [ -n "$POLYPACK_FILES" ]; then args+=(--files); fi
+        "$RUNNER_TEMP/polypack-bin/polypack" "${args[@]}"
+    # A Files Pack (step 74): upload the Files with the Publisher Token the
+    # step above put in POLYPACK_TOKEN, then publish the Version.
+    - name: Upload the Files and publish the Version
+      if: inputs.files != ''
+      shell: bash
+      env:
+        POLYPACK_TEAM: ${{ inputs.team }}
+        POLYPACK_PACK: ${{ inputs.pack }}
+        POLYPACK_REGISTRY: ${{ inputs.registry }}
+        POLYPACK_FILES: ${{ inputs.files }}
+        POLYPACK_FILES_VERSION: ${{ inputs.version }}
+      run: |
+        if [ -z "$POLYPACK_FILES_VERSION" ]; then
+          echo "::error::Set the version input (e.g. to the release's tag) to publish Files."
+          exit 1
+        fi
+        args=(files upload "$POLYPACK_PACK@$POLYPACK_FILES_VERSION" "$POLYPACK_FILES" --team "$POLYPACK_TEAM" --publish)
+        if [ -n "$POLYPACK_REGISTRY" ]; then args+=(--registry "$POLYPACK_REGISTRY"); fi
         "$RUNNER_TEMP/polypack-bin/polypack" "${args[@]}"
