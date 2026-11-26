@@ -23,7 +23,7 @@ Usage:
   polypack files download <pack>[@<version or channel>] [--file NAME] [--out DIR]
   polypack ci <pack> --team SLUG [--files]   (in GitHub Actions: trusted publishing)
   polypack doctor [--team SLUG]     (check npm, Composer and docker here)
-  polypack update [--version vX.Y.Z]
+  polypack update [--version vX.Y.Z] [--channel NAME]
   polypack version
 
 The host is https://polypack.io unless --host or POLYPACK_HOST says otherwise.

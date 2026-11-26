@@ -78,12 +78,23 @@ func latestRelease(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("could not find the latest release in %s", location)
 }
 
-// parseVersion reads vMAJOR.MINOR.PATCH. Anything else, a dev build or a
-// pre-release, does not parse, so it is never offered or replaced.
-func parseVersion(v string) ([3]int, bool) {
-	var parsed [3]int
-	fields := strings.Split(strings.TrimPrefix(v, "v"), ".")
-	if !strings.HasPrefix(v, "v") || len(fields) != 3 {
+// semver is a release's version: vMAJOR.MINOR.PATCH, and since step 75 an
+// optional pre-release (`v0.8.0-beta.1`) for the beta channel.
+type semver struct {
+	nums [3]int
+	pre  []string
+}
+
+// parseVersion reads vMAJOR.MINOR.PATCH[-PRERELEASE]. Anything else, a dev
+// build or a tag that does not parse, is never offered or replaced.
+func parseVersion(v string) (semver, bool) {
+	var parsed semver
+	if !strings.HasPrefix(v, "v") {
+		return parsed, false
+	}
+	core, pre, hasPre := strings.Cut(strings.TrimPrefix(v, "v"), "-")
+	fields := strings.Split(core, ".")
+	if len(fields) != 3 {
 		return parsed, false
 	}
 	for i, field := range fields {
@@ -91,25 +102,57 @@ func parseVersion(v string) ([3]int, bool) {
 		if err != nil || n < 0 || strconv.Itoa(n) != field {
 			return parsed, false
 		}
-		parsed[i] = n
+		parsed.nums[i] = n
+	}
+	if hasPre {
+		parsed.pre = strings.Split(pre, ".")
+		for _, id := range parsed.pre {
+			if id == "" || strings.Trim(id, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-") != "" {
+				return semver{}, false
+			}
+		}
 	}
 	return parsed, true
 }
 
-// isNewer says whether candidate is a later release than current. False
-// whenever either does not parse.
+// isNewer says whether candidate is a later release than current, by
+// SemVer's precedence (a pre-release is below its release). False whenever
+// either does not parse.
 func isNewer(current, candidate string) bool {
 	a, ok := parseVersion(current)
 	b, ok2 := parseVersion(candidate)
 	if !ok || !ok2 {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return b[i] > a[i]
+	for i := range a.nums {
+		if a.nums[i] != b.nums[i] {
+			return b.nums[i] > a.nums[i]
 		}
 	}
-	return false
+	switch {
+	case len(a.pre) == 0:
+		return false // a release is never older than its own pre-release
+	case len(b.pre) == 0:
+		return true
+	}
+	for i := 0; i < len(a.pre) && i < len(b.pre); i++ {
+		if a.pre[i] == b.pre[i] {
+			continue
+		}
+		an, aErr := strconv.Atoi(a.pre[i])
+		bn, bErr := strconv.Atoi(b.pre[i])
+		switch {
+		case aErr == nil && bErr == nil:
+			return bn > an
+		case aErr == nil:
+			return true // numeric identifiers sort below alphanumeric ones
+		case bErr == nil:
+			return false
+		default:
+			return b.pre[i] > a.pre[i]
+		}
+	}
+	return len(b.pre) > len(a.pre)
 }
 
 func assetName() string {
@@ -132,8 +175,18 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	target := flags.String("version", "", "install this release (vX.Y.Z) instead of the latest")
+	channel := flags.String("channel", "", "follow this channel, e.g. beta, from now on (latest: stable releases only)")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	cached, cachePath := loadUpdateCheck()
+	if *channel != "" {
+		// Remembered, so the notice follows it; the cached answer was another channel's.
+		cached = updateCheck{Channel: *channel}
+		if *channel == "latest" {
+			cached.Channel = ""
+		}
+		saveUpdateCheck(cachePath, cached)
 	}
 	if _, ok := parseVersion(version); !ok {
 		return errors.New("this polypack was built from source; install a release with install.sh to use update")
@@ -149,11 +202,19 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 	if tag == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if tag, err = latestRelease(ctx); err != nil {
+		var note string
+		if tag, note, err = latestTag(ctx, cached.channel()); err != nil {
 			return err
 		}
+		if note != "" {
+			fmt.Fprintf(stderr, "%s; asking GitHub.\n", note)
+		}
 		if !isNewer(version, tag) {
-			fmt.Fprintf(stdout, "polypack %s is the latest version.\n", version)
+			on := ""
+			if cached.channel() != "latest" {
+				on = " on the " + cached.channel() + " channel"
+			}
+			fmt.Fprintf(stdout, "polypack %s is the latest version%s.\n", version, on)
 			return nil
 		}
 	} else if _, ok := parseVersion(tag); !ok {
@@ -163,20 +224,20 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	base := releasesURL() + "/download/" + tag + "/"
-	name := assetName()
-	sums, err := downloadRelease(base + "SHA256SUMS")
-	if err != nil {
+	// PolyPack first, checked against the pinned key; GitHub when PolyPack
+	// cannot answer for this release (step 75). A bad signature or checksum
+	// from PolyPack refuses the update, never falls back.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	binary, err := fromPolyPack(ctx, tag)
+	if err != nil && !isFallback(err) {
 		return err
 	}
-	binary, err := downloadRelease(base + name)
 	if err != nil {
-		return err
-	}
-	expected := checksumFor(sums, name)
-	actual := sha256.Sum256(binary)
-	if expected == "" || expected != hex.EncodeToString(actual[:]) {
-		return fmt.Errorf("checksum mismatch for %s %s; not updating", name, tag)
+		fmt.Fprintf(stderr, "%s; downloading %s from GitHub.\n", err, tag)
+		if binary, err = fromGitHub(tag); err != nil {
+			return err
+		}
 	}
 
 	if err := replaceExecutable(exe, binary); err != nil {
@@ -187,6 +248,27 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "polypack updated: %s → %s\n", version, tag)
 	return nil
+}
+
+// fromGitHub downloads a release's binary for this platform from its GitHub
+// Release, checked against the release's SHA256SUMS (step 70).
+func fromGitHub(tag string) ([]byte, error) {
+	base := releasesURL() + "/download/" + tag + "/"
+	name := assetName()
+	sums, err := downloadRelease(base + "SHA256SUMS")
+	if err != nil {
+		return nil, err
+	}
+	binary, err := downloadRelease(base + name)
+	if err != nil {
+		return nil, err
+	}
+	expected := checksumFor(sums, name)
+	actual := sha256.Sum256(binary)
+	if expected == "" || expected != hex.EncodeToString(actual[:]) {
+		return nil, fmt.Errorf("checksum mismatch for %s %s; not updating", name, tag)
+	}
+	return binary, nil
 }
 
 func downloadRelease(url string) ([]byte, error) {
@@ -262,6 +344,37 @@ func replaceExecutable(exe string, binary []byte) error {
 type updateCheck struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Latest    string    `json:"latest,omitempty"`
+	// The channel `polypack update --channel` last chose (step 75); the
+	// notice follows it. Empty is `latest`.
+	Channel string `json:"channel,omitempty"`
+}
+
+func loadUpdateCheck() (updateCheck, string) {
+	var cached updateCheck
+	path, err := updateCheckPath()
+	if err != nil {
+		return cached, ""
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cached)
+	}
+	return cached, path
+}
+
+func saveUpdateCheck(path string, checked updateCheck) {
+	if path == "" {
+		return
+	}
+	if data, err := json.Marshal(checked); err == nil && os.MkdirAll(filepath.Dir(path), 0o700) == nil {
+		_ = writeFileAtomic(path, append(data, '\n'), 0o600)
+	}
+}
+
+func (c updateCheck) channel() string {
+	if c.Channel == "" {
+		return "latest"
+	}
+	return c.Channel
 }
 
 func updateCheckPath() (string, error) {
@@ -308,13 +421,9 @@ func startUpdateNotice(command string, stderr io.Writer) func() {
 	if !noticeWanted(command, stderr) {
 		return func() {}
 	}
-	path, err := updateCheckPath()
-	if err != nil {
+	cached, path := loadUpdateCheck()
+	if path == "" {
 		return func() {}
-	}
-	var cached updateCheck
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &cached)
 	}
 	show := func(latest string) {
 		if isNewer(version, latest) {
@@ -330,13 +439,12 @@ func startUpdateNotice(command string, stderr io.Writer) func() {
 	go func() {
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
-		checked := updateCheck{CheckedAt: now(), Latest: cached.Latest}
-		if latest, err := latestRelease(ctx); err == nil {
+		checked := updateCheck{CheckedAt: now(), Latest: cached.Latest, Channel: cached.Channel}
+		// PolyPack's channel first, else GitHub's latest (step 75).
+		if latest, _, err := latestTag(ctx, cached.channel()); err == nil {
 			checked.Latest = latest
 		}
-		if data, err := json.Marshal(checked); err == nil && os.MkdirAll(filepath.Dir(path), 0o700) == nil {
-			_ = writeFileAtomic(path, append(data, '\n'), 0o600)
-		}
+		saveUpdateCheck(path, checked)
 		result <- checked.Latest
 	}()
 	return func() {

@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  # Step 75: the exchange for a Publisher Token of PolyPack's polypack-cli.
+  id-token: write
 
 jobs:
   release:
@@ -33,4 +35,17 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "polypack $GITHUB_REF_NAME" --generate-notes
+        # A pre-release (v0.8.0-beta.1) is never GitHub's "latest", which every
+        # CLI on the stable channel falls back to.
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --title "polypack $GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"
+      # Step 75 (ADR-0036 § 9): the same binaries, as a Version of the public
+      # Files Pack polypack-cli on Cool Studio's Team, with trusted
+      # publishing: no secret. The binary just built does it. SHA256SUMS stays
+      # out: PolyPack generates and signs its own.
+      - name: Exchange for a Publisher Token of polypack-cli
+        run: ./dist/polypack-linux-amd64 ci polypack-cli --team cool-studio --files
+      - name: Publish to PolyPack
+        run: ./dist/polypack-linux-amd64 files upload "polypack-cli@${GITHUB_REF_NAME}" 'dist/polypack-*' --team cool-studio --publish

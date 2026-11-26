@@ -59,6 +59,8 @@ func newFakeReleases(t *testing.T, tag string) *fakeReleases {
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 	t.Setenv("POLYPACK_RELEASES_URL", f.server.URL)
+	// GitHub only: never the real PolyPack (step 75); source_test.go fakes it.
+	t.Setenv("POLYPACK_CLI_FILES_URL", "off")
 	return f
 }
 
@@ -83,12 +85,12 @@ func fakeExecutable(t *testing.T) string {
 }
 
 func TestParseVersionAndIsNewer(t *testing.T) {
-	for _, v := range []string{"v0.4.0", "v1.0.0", "v10.20.30"} {
+	for _, v := range []string{"v0.4.0", "v1.0.0", "v10.20.30", "v0.4.0-rc.1", "v0.8.0-beta.2"} {
 		if _, ok := parseVersion(v); !ok {
 			t.Errorf("parseVersion(%q) failed", v)
 		}
 	}
-	for _, v := range []string{"dev", "0.4.0", "v0.4", "v0.4.0-rc.1", "v0.04.0", "v0.4.x", ""} {
+	for _, v := range []string{"dev", "0.4.0", "v0.4", "v0.04.0", "v0.4.x", "v0.4.0-", "v0.4.0-rc..1", "v0.4.0-rc_1", ""} {
 		if _, ok := parseVersion(v); ok {
 			t.Errorf("parseVersion(%q) parsed", v)
 		}
@@ -106,6 +108,15 @@ func TestParseVersionAndIsNewer(t *testing.T) {
 		{"dev", "v0.5.0", false},
 		{"v0.4.0", "nightly", false},
 		{"v0.4.0", "", false},
+		// Pre-releases (step 75), by SemVer's precedence.
+		{"v0.7.0", "v0.8.0-beta.1", true},
+		{"v0.8.0-beta.1", "v0.8.0-beta.2", true},
+		{"v0.8.0-beta.2", "v0.8.0", true},
+		{"v0.8.0", "v0.8.0-beta.9", false},
+		{"v0.8.0-beta.10", "v0.8.0-beta.9", false},
+		{"v0.8.0-alpha.1", "v0.8.0-beta.1", true},
+		{"v0.8.0-beta", "v0.8.0-beta.1", true},
+		{"v0.8.0-1", "v0.8.0-alpha", true},
 	}
 	for _, c := range cases {
 		if got := isNewer(c.current, c.candidate); got != c.newer {

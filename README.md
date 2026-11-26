@@ -28,6 +28,10 @@ macOS and Linux:
 curl -fsSL https://raw.githubusercontent.com/cool-studio/polypack-cli/main/install.sh | sh
 ```
 
+`POLYPACK_SOURCE=polypack` installs from PolyPack instead of GitHub, and
+checks `SHA256SUMS`'s signature with PolyPack's key when `openssl` is
+installed.
+
 Or download a binary for your platform from the
 [releases](https://github.com/cool-studio/polypack-cli/releases), and check it
 against `SHA256SUMS`.
@@ -45,7 +49,7 @@ against `SHA256SUMS`.
 | `polypack files download <pack>[@<version or channel>] [--file NAME] [--out DIR]` | Downloads a Version's Files (the latest by default, or a channel such as `beta`), each checked against `SHA256SUMS` and PolyPack's signature before it is saved |
 | `polypack verify npm @scope/name@version` / `polypack verify oci name:tag` `[--team SLUG]` | Checks a Version's provenance: PolyPack's signature, and that the registry serves what was published. Prints the repository, commit, workflow and run it came from |
 | `polypack doctor [--team SLUG]` | Checks what npm, Composer and docker send to each Team's hosts, here and in this project, asks each host about each Token, and says what to fix. It changes nothing, and never prints a Token |
-| `polypack update [--version vX.Y.Z]` | Replaces this binary with the latest release (or the one named), checked against the release's `SHA256SUMS` |
+| `polypack update [--version vX.Y.Z] [--channel NAME]` | Replaces this binary with the latest release (or the one named, or the newest on a channel such as `beta`), from PolyPack, checked against a `SHA256SUMS` signed by PolyPack's key built into this CLI; from GitHub when PolyPack cannot vouch for it |
 | `polypack version` | The version |
 
 The Token appears under **My Tokens** in PolyPack as "CLI on {machine}", and
@@ -84,13 +88,23 @@ characters, as in the panel. It exits with `1` if it found a problem.
 polypack update
 ```
 
-It downloads the latest release for your platform, checks it against the
-release's `SHA256SUMS` as `install.sh` does, and replaces the binary it runs
-from. If that is in a directory you cannot write, such as `/usr/local/bin`,
+It downloads the latest release for your platform and replaces the binary it
+runs from. Releases come from PolyPack itself, from the public Files Pack
+`polypack-cli` on Cool Studio's Team, and are checked against a
+`SHA256SUMS` signed by PolyPack's key, which is built into this CLI: a
+release PolyPack cannot vouch for that way is never installed from there.
+When PolyPack is unreachable, or signs with a key this CLI does not know
+yet, the release comes from GitHub instead, checked against its
+`SHA256SUMS`, and it says so. If that is in a directory you cannot write, such as `/usr/local/bin`,
 run `sudo polypack update`, or `install.sh` again. `--version v0.4.0` installs
 a particular release.
 
-At most once a day, the CLI asks GitHub for the latest release, alongside
+`polypack update --channel beta` follows the beta channel from then on:
+pre-releases such as `v0.8.0-beta.1` as they come, and each stable release
+as it overtakes them. The notice follows the same channel, and
+`--channel latest` goes back to stable releases.
+
+At most once a day, the CLI asks PolyPack (or GitHub) for the latest release, alongside
 whatever command you run, and if there is a newer one it says so after the
 command:
 
