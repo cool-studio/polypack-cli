@@ -32,7 +32,10 @@ type fakePolyPackCLI struct {
 	signedAs string            // X-PolyPack-Key-Id
 	unsigned bool
 	tamper   bool
+	broken   bool         // index.json answers 500
+	sums     string       // served as SHA256SUMS (and signed) in place of the real ones
 	served   atomic.Int32 // binaries served
+	lookups  atomic.Int32 // index.json requests
 }
 
 func newFakePolyPackCLI(t *testing.T, channels map[string]string) *fakePolyPackCLI {
@@ -52,6 +55,9 @@ func newFakePolyPackCLI(t *testing.T, channels map[string]string) *fakePolyPackC
 
 	binary := func(version string) []byte { return []byte("polypack from PolyPack v" + version) }
 	sums := func(version string) []byte {
+		if f.sums != "" {
+			return []byte(f.sums)
+		}
 		b := binary(version)
 		if f.tamper {
 			b = []byte("something else")
@@ -72,6 +78,11 @@ func newFakePolyPackCLI(t *testing.T, channels map[string]string) *fakePolyPackC
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /index.json", func(w http.ResponseWriter, r *http.Request) {
+		f.lookups.Add(1)
+		if f.broken {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"name": "polypack-cli", "channels": f.channels, "versions": []any{}})
 	})
 	mux.HandleFunc("GET /{version}/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
@@ -122,17 +133,16 @@ func installed(t *testing.T, exe string) string {
 	return string(data)
 }
 
-func updateSetup(t *testing.T, githubTag string, channels map[string]string) (*fakeReleases, *fakePolyPackCLI, string) {
+func updateSetup(t *testing.T, channels map[string]string) (*fakePolyPackCLI, string) {
 	t.Helper()
-	github := newFakeReleases(t, githubTag)
-	polypack := newFakePolyPackCLI(t, channels) // after: it turns the PolyPack source back on
+	polypack := newFakePolyPackCLI(t, channels)
 	setVersion(t, "v0.4.0")
 	t.Setenv("POLYPACK_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-	return github, polypack, fakeExecutable(t)
+	return polypack, fakeExecutable(t)
 }
 
 func TestUpdateFromPolyPackCheckedAgainstThePinnedKey(t *testing.T) {
-	github, polypack, exe := updateSetup(t, "v0.5.0", map[string]string{"latest": "0.5.0"})
+	polypack, exe := updateSetup(t, map[string]string{"latest": "0.5.0"})
 
 	code, stdout, stderr := runUpdate(t)
 	if code != 0 {
@@ -141,34 +151,36 @@ func TestUpdateFromPolyPackCheckedAgainstThePinnedKey(t *testing.T) {
 	if installed(t, exe) != "polypack from PolyPack v0.5.0" || !strings.Contains(stdout, "polypack updated: v0.4.0 → v0.5.0") {
 		t.Errorf("installed %q:\n%s%s", installed(t, exe), stdout, stderr)
 	}
-	if polypack.served.Load() != 1 || github.lookups.Load() != 0 {
-		t.Errorf("PolyPack served %d, GitHub asked %d times", polypack.served.Load(), github.lookups.Load())
+	if polypack.served.Load() != 1 {
+		t.Errorf("PolyPack served %d binaries", polypack.served.Load())
 	}
 }
 
-func TestUpdateFallsBackToGitHubWhenPolyPackCannotVouch(t *testing.T) {
-	for name, setUp := range map[string]func(f *fakePolyPackCLI){
-		"a key this CLI does not pin": func(f *fakePolyPackCLI) {
+// No other source exists (ADR-0037): whatever PolyPack cannot vouch for is
+// refused, saying why, and nothing is replaced.
+func TestUpdateRefusesWhenPolyPackCannotVouch(t *testing.T) {
+	for name, c := range map[string]struct {
+		setUp func(f *fakePolyPackCLI)
+		says  string
+	}{
+		"a key this CLI does not pin": {func(f *fakePolyPackCLI) {
 			other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			f.signer, f.signedAs = other, "SHA256:rotated"
-		},
-		"not signed":            func(f *fakePolyPackCLI) { f.unsigned = true },
-		"PolyPack is down":      func(f *fakePolyPackCLI) { f.server.Close() },
-		"no stable release yet": func(f *fakePolyPackCLI) { f.channels = map[string]string{} },
+		}, "PolyPack signs with SHA256:rotated, which this polypack does not know. Reinstall it: " + reinstall},
+		"not signed":            {func(f *fakePolyPackCLI) { f.unsigned = true }, "PolyPack does not sign v0.5.0"},
+		"PolyPack is down":      {func(f *fakePolyPackCLI) { f.server.Close() }, "PolyPack could not be reached"},
+		"no stable release yet": {func(f *fakePolyPackCLI) { f.channels = map[string]string{} }, "PolyPack has no release on the latest channel"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, polypack, exe := updateSetup(t, "v0.5.0", map[string]string{"latest": "0.5.0"})
-			setUp(polypack)
+			polypack, exe := updateSetup(t, map[string]string{"latest": "0.5.0"})
+			c.setUp(polypack)
 
 			code, _, stderr := runUpdate(t)
-			if code != 0 {
-				t.Fatalf("exit %d: %s", code, stderr)
+			if code != 1 || !strings.Contains(stderr, c.says) {
+				t.Fatalf("exit %d:\n%s", code, stderr)
 			}
-			if installed(t, exe) != "new polypack v0.5.0" {
-				t.Errorf("installed %q, not GitHub's:\n%s", installed(t, exe), stderr)
-			}
-			if !strings.Contains(stderr, "GitHub") {
-				t.Errorf("no note about GitHub:\n%s", stderr)
+			if installed(t, exe) != "old polypack" {
+				t.Errorf("replaced with %q", installed(t, exe))
 			}
 		})
 	}
@@ -184,7 +196,7 @@ func TestUpdateRefusesWhatThePinnedKeyDoesNotVouchFor(t *testing.T) {
 		"a binary that is not in SHA256SUMS": func(f *fakePolyPackCLI) { f.tamper = true },
 	} {
 		t.Run(name, func(t *testing.T) {
-			github, polypack, exe := updateSetup(t, "v0.5.0", map[string]string{"latest": "0.5.0"})
+			polypack, exe := updateSetup(t, map[string]string{"latest": "0.5.0"})
 			setUp(polypack)
 
 			code, _, stderr := runUpdate(t)
@@ -194,15 +206,12 @@ func TestUpdateRefusesWhatThePinnedKeyDoesNotVouchFor(t *testing.T) {
 			if installed(t, exe) != "old polypack" {
 				t.Errorf("replaced with %q", installed(t, exe))
 			}
-			if github.lookups.Load() != 0 {
-				t.Error("fell back to GitHub after a failed check")
-			}
 		})
 	}
 }
 
 func TestUpdateFollowsAChannelAndTheNoticeRemembersIt(t *testing.T) {
-	_, _, exe := updateSetup(t, "v0.5.0", map[string]string{"latest": "0.5.0", "beta": "0.6.0-beta.1"})
+	_, exe := updateSetup(t, map[string]string{"latest": "0.5.0", "beta": "0.6.0-beta.1"})
 
 	code, stdout, stderr := runUpdate(t, "--channel", "beta")
 	if code != 0 {

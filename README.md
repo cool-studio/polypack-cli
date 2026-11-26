@@ -25,16 +25,17 @@ mistake.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/cool-studio/polypack-cli/main/install.sh | sh
+curl -fsSL https://polypack.io/install.sh | sh
 ```
 
-`POLYPACK_SOURCE=polypack` installs from PolyPack instead of GitHub, and
-checks `SHA256SUMS`'s signature with PolyPack's key when `openssl` is
-installed.
+It installs from PolyPack, checked against `SHA256SUMS`, and against its
+signature by PolyPack's key when `openssl` is installed.
 
-Or download a binary for your platform from the
-[releases](https://github.com/cool-studio/polypack-cli/releases), and check it
-against `SHA256SUMS`.
+On Windows, or to pick by hand: every release is a Version of the public
+Files Pack `polypack-cli`, listed at
+<https://cool-studio.pkg.polypack.io/files/polypack-cli/index.json>, and
+downloads from `…/files/polypack-cli/latest/polypack-windows-amd64.exe`
+(and the others), each checked against the `SHA256SUMS` beside it.
 
 ## Commands
 
@@ -93,10 +94,10 @@ runs from. Releases come from PolyPack itself, from the public Files Pack
 `polypack-cli` on Cool Studio's Team, and are checked against a
 `SHA256SUMS` signed by PolyPack's key, which is built into this CLI: a
 release PolyPack cannot vouch for that way is never installed from there.
-When PolyPack is unreachable, or signs with a key this CLI does not know
-yet, the release comes from GitHub instead, checked against its
-`SHA256SUMS`, and it says so. If that is in a directory you cannot write, such as `/usr/local/bin`,
-run `sudo polypack update`, or `install.sh` again. `--version v0.4.0` installs
+PolyPack is the only source: if it cannot be reached, try again later. If
+it signs with a key this CLI does not know (PolyPack rotated its key),
+reinstall with `curl -fsSL https://polypack.io/install.sh | sh`. If that is in a directory you cannot write, such as `/usr/local/bin`,
+run `sudo polypack update`, or `install.sh` again. `--version v0.9.0` installs
 a particular release.
 
 `polypack update --channel beta` follows the beta channel from then on:
@@ -104,7 +105,7 @@ pre-releases such as `v0.8.0-beta.1` as they come, and each stable release
 as it overtakes them. The notice follows the same channel, and
 `--channel latest` goes back to stable releases.
 
-At most once a day, the CLI asks PolyPack (or GitHub) for the latest release, alongside
+At most once a day, the CLI asks PolyPack for the latest release, alongside
 whatever command you run, and if there is a newer one it says so after the
 command:
 

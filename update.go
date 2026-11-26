@@ -4,14 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,9 +16,6 @@ import (
 	"strings"
 	"time"
 )
-
-// The CLI's releases, as install.sh downloads them (ADR-0034).
-const defaultReleasesURL = "https://github.com/cool-studio/polypack-cli/releases"
 
 // A binary is a few MB; anything far larger is not ours.
 const maxDownload = 200 << 20
@@ -38,45 +32,6 @@ var (
 	stderrIsTerminal = isTerminal
 	executablePath   = currentExecutable
 )
-
-func releasesURL() string {
-	if url := os.Getenv("POLYPACK_RELEASES_URL"); url != "" {
-		return strings.TrimRight(url, "/")
-	}
-	return defaultReleasesURL
-}
-
-// latestRelease reads the newest release's tag from the redirect that
-// releases/latest/download/… answers with, without following it.
-func latestRelease(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, releasesURL()+"/latest/download/SHA256SUMS", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", userAgent())
-	client := &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("could not find the latest release: %w", err)
-	}
-	resp.Body.Close()
-	location, err := resp.Location()
-	if err != nil {
-		return "", fmt.Errorf("could not find the latest release: HTTP %d", resp.StatusCode)
-	}
-	parts := strings.Split(location.Path, "/")
-	for i := 0; i+2 < len(parts); i++ {
-		if parts[i] == "releases" && parts[i+1] == "download" {
-			if _, ok := parseVersion(parts[i+2]); ok {
-				return parts[i+2], nil
-			}
-		}
-	}
-	return "", fmt.Errorf("could not find the latest release in %s", location)
-}
 
 // semver is a release's version: vMAJOR.MINOR.PATCH, and since step 75 an
 // optional pre-release (`v0.8.0-beta.1`) for the beta channel.
@@ -202,12 +157,8 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 	if tag == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		var note string
-		if tag, note, err = latestTag(ctx, cached.channel()); err != nil {
+		if tag, err = latestFromPolyPack(ctx, cached.channel()); err != nil {
 			return err
-		}
-		if note != "" {
-			fmt.Fprintf(stderr, "%s; asking GitHub.\n", note)
 		}
 		if !isNewer(version, tag) {
 			on := ""
@@ -224,20 +175,12 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	// PolyPack first, checked against the pinned key; GitHub when PolyPack
-	// cannot answer for this release (step 75). A bad signature or checksum
-	// from PolyPack refuses the update, never falls back.
+	// From PolyPack, checked against the pinned key (ADR-0037).
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	binary, err := fromPolyPack(ctx, tag)
-	if err != nil && !isFallback(err) {
-		return err
-	}
 	if err != nil {
-		fmt.Fprintf(stderr, "%s; downloading %s from GitHub.\n", err, tag)
-		if binary, err = fromGitHub(tag); err != nil {
-			return err
-		}
+		return err
 	}
 
 	if err := replaceExecutable(exe, binary); err != nil {
@@ -248,51 +191,6 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "polypack updated: %s → %s\n", version, tag)
 	return nil
-}
-
-// fromGitHub downloads a release's binary for this platform from its GitHub
-// Release, checked against the release's SHA256SUMS (step 70).
-func fromGitHub(tag string) ([]byte, error) {
-	base := releasesURL() + "/download/" + tag + "/"
-	name := assetName()
-	sums, err := downloadRelease(base + "SHA256SUMS")
-	if err != nil {
-		return nil, err
-	}
-	binary, err := downloadRelease(base + name)
-	if err != nil {
-		return nil, err
-	}
-	expected := checksumFor(sums, name)
-	actual := sha256.Sum256(binary)
-	if expected == "" || expected != hex.EncodeToString(actual[:]) {
-		return nil, fmt.Errorf("checksum mismatch for %s %s; not updating", name, tag)
-	}
-	return binary, nil
-}
-
-func downloadRelease(url string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", userAgent())
-	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("could not download %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("could not download %s: HTTP %d", url, resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
-	if err != nil {
-		return nil, fmt.Errorf("could not download %s: %w", url, err)
-	}
-	if len(data) > maxDownload {
-		return nil, fmt.Errorf("could not download %s: too large", url)
-	}
-	return data, nil
 }
 
 // checksumFor finds a file's line in SHA256SUMS ("<hex>  <name>").
@@ -440,8 +338,7 @@ func startUpdateNotice(command string, stderr io.Writer) func() {
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		checked := updateCheck{CheckedAt: now(), Latest: cached.Latest, Channel: cached.Channel}
-		// PolyPack's channel first, else GitHub's latest (step 75).
-		if latest, _, err := latestTag(ctx, cached.channel()); err == nil {
+		if latest, err := latestFromPolyPack(ctx, cached.channel()); err == nil {
 			checked.Latest = latest
 		}
 		saveUpdateCheck(path, checked)

@@ -17,18 +17,20 @@ import (
 	"time"
 )
 
-// The CLI's releases on PolyPack (step 75, ADR-0034 as amended, ADR-0036
-// § 9): every release is also a Version of the public Files Pack
-// `polypack-cli` on Cool Studio's Team. `polypack update` and the notice ask
-// there first, check SHA256SUMS against a pinned key (pinned.go), and fall
-// back to GitHub's releases when PolyPack cannot answer for a release, or
-// signs with a key this CLI does not pin. A signature or checksum that does
-// not match is never a fallback: the update is refused.
+// The CLI's releases, on PolyPack only (step 77, ADR-0037): every release
+// is a Version of the public Files Pack `polypack-cli` on Cool Studio's
+// Team. `polypack update` and the notice ask there, and check SHA256SUMS
+// against a pinned key (pinned.go). There is no other source: when PolyPack
+// cannot vouch for a release, the update is refused and says why. A key the
+// CLI does not pin (PolyPack rotated its key) means reinstalling.
+
+// reinstall is the line that installs the current CLI, whatever this one is.
+const reinstall = "curl -fsSL https://polypack.io/install.sh | sh"
 
 const defaultFilesURL = "https://cool-studio.pkg.polypack.io/files/polypack-cli"
 
 // filesURL is where the CLI's Files Pack is: POLYPACK_CLI_FILES_URL, for
-// tests and mirrors, or the default; `off` asks GitHub only.
+// tests and mirrors, or the default; `off` (the tests' default) asks nobody.
 func filesURL() string {
 	switch url := os.Getenv("POLYPACK_CLI_FILES_URL"); url {
 	case "":
@@ -38,17 +40,6 @@ func filesURL() string {
 	default:
 		return strings.TrimRight(url, "/")
 	}
-}
-
-// fallback is an answer PolyPack could not give: the update goes to GitHub,
-// with this as the note. Any other error refuses the update.
-type fallback struct{ reason string }
-
-func (f fallback) Error() string { return f.reason }
-
-func isFallback(err error) bool {
-	var f fallback
-	return errors.As(err, &f)
 }
 
 // sourceClient fetches from PolyPack; public, so no Token is ever sent.
@@ -68,52 +59,40 @@ func sourceGet(ctx context.Context, url string) (*http.Response, error) {
 func latestFromPolyPack(ctx context.Context, channel string) (string, error) {
 	base := filesURL()
 	if base == "" {
-		return "", fallback{"PolyPack is turned off for updates"}
+		return "", errors.New("updates are turned off (POLYPACK_CLI_FILES_URL=off)")
 	}
 	resp, err := sourceGet(ctx, base+"/index.json")
 	if err != nil {
-		return "", fallback{"PolyPack could not be reached"}
+		return "", errors.New("PolyPack could not be reached for updates; try again later")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fallback{fmt.Sprintf("PolyPack answered %d", resp.StatusCode)}
+		return "", fmt.Errorf("PolyPack answered %d for updates; try again later", resp.StatusCode)
 	}
 	var index struct {
 		Channels map[string]string `json:"channels"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&index); err != nil {
-		return "", fallback{"PolyPack's index could not be read"}
+		return "", errors.New("PolyPack's list of releases could not be read; try again later")
 	}
 	version := index.Channels[channel]
 	if version == "" {
-		return "", fallback{"PolyPack has no release on the " + channel + " channel"}
+		return "", errors.New("PolyPack has no release on the " + channel + " channel")
 	}
 	tag := "v" + version
 	if _, ok := parseVersion(tag); !ok {
-		return "", fallback{"PolyPack's " + channel + " is not a release: " + version}
+		return "", errors.New("PolyPack's " + channel + " channel names " + version + ", which is not a release")
 	}
 	return tag, nil
 }
 
-// latestTag is the newest release on a channel: from PolyPack, or else from
-// GitHub, which knows only its latest stable release.
-func latestTag(ctx context.Context, channel string) (string, string, error) {
-	tag, err := latestFromPolyPack(ctx, channel)
-	if err == nil {
-		return tag, "", nil
-	}
-	note := err.Error()
-	tag, err = latestRelease(ctx)
-	return tag, note, err
-}
-
 // fromPolyPack downloads a release's binary for this platform from PolyPack
 // and checks it: SHA256SUMS signed by a pinned key, then the binary's
-// SHA-256 in it. A fallback error means GitHub should be asked instead.
+// SHA-256 in it. Any failure refuses the update.
 func fromPolyPack(ctx context.Context, tag string) ([]byte, error) {
 	base := filesURL()
 	if base == "" {
-		return nil, fallback{"PolyPack is turned off for updates"}
+		return nil, errors.New("updates are turned off (POLYPACK_CLI_FILES_URL=off)")
 	}
 	versionURL := base + "/" + strings.TrimPrefix(tag, "v")
 
@@ -123,7 +102,7 @@ func fromPolyPack(ctx context.Context, tag string) ([]byte, error) {
 	}
 	sig, header, err := sourceBytes(ctx, versionURL+"/SHA256SUMS.sig", 4096)
 	if err != nil {
-		return nil, fallback{"PolyPack does not sign " + tag}
+		return nil, fmt.Errorf("PolyPack does not sign %s, so this polypack cannot check it; not updating", tag)
 	}
 	if err := verifyPinned(sums, strings.TrimSpace(string(sig)), header.Get("X-PolyPack-Key-Id")); err != nil {
 		return nil, err
@@ -132,32 +111,32 @@ func fromPolyPack(ctx context.Context, tag string) ([]byte, error) {
 	name := assetName()
 	expected := checksumFor(sums, name)
 	if expected == "" {
-		return nil, fallback{tag + " on PolyPack has no " + name}
+		return nil, fmt.Errorf("%s has no %s; not updating", tag, name)
 	}
 	binary, _, err := sourceBytes(ctx, versionURL+"/"+name, maxDownload)
 	if err != nil {
 		return nil, err
 	}
 	if sum := sha256.Sum256(binary); hex.EncodeToString(sum[:]) != expected {
-		return nil, fmt.Errorf("%s %s from PolyPack is not what its signed SHA256SUMS says; not updating", name, tag)
+		return nil, fmt.Errorf("checksum mismatch for %s %s: it is not what its signed SHA256SUMS says; not updating", name, tag)
 	}
 	return binary, nil
 }
 
-// sourceBytes fetches a file from PolyPack; anything but a 200 is a
-// fallback (a release PolyPack does not have, or an outage).
+// sourceBytes fetches a file from PolyPack; anything but a 200 is an error
+// (a release PolyPack does not have, or an outage).
 func sourceBytes(ctx context.Context, url string, limit int64) ([]byte, http.Header, error) {
 	resp, err := sourceGet(ctx, url)
 	if err != nil {
-		return nil, nil, fallback{"PolyPack could not be reached"}
+		return nil, nil, errors.New("PolyPack could not be reached; try again later")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fallback{fmt.Sprintf("PolyPack answered %d for %s", resp.StatusCode, url[strings.LastIndex(url, "/")+1:])}
+		return nil, nil, fmt.Errorf("PolyPack answered %d for %s", resp.StatusCode, url[strings.LastIndex(url, "/")+1:])
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, nil, fallback{"PolyPack's answer was cut short"}
+		return nil, nil, errors.New("PolyPack's answer was cut short; try again")
 	}
 	if int64(len(data)) > limit {
 		return nil, nil, fmt.Errorf("%s from PolyPack is too large", url[strings.LastIndex(url, "/")+1:])
@@ -166,12 +145,12 @@ func sourceBytes(ctx context.Context, url string, limit int64) ([]byte, http.Hea
 }
 
 // verifyPinned checks SHA256SUMS's signature with a key this CLI pins. A key
-// it does not pin (PolyPack rotated its key) is a fallback to GitHub; a
-// signature by a pinned key that does not verify is refused outright.
+// it does not pin (PolyPack rotated its key) cannot be trusted from here, so
+// the way on is reinstalling; a signature that does not verify is refused.
 func verifyPinned(sums []byte, signature, keyID string) error {
 	key, ok := pinnedKeys[keyID]
 	if !ok {
-		return fallback{"PolyPack signs with " + keyID + ", which this polypack does not know (a newer release will)"}
+		return fmt.Errorf("PolyPack signs with %s, which this polypack does not know. Reinstall it: %s", keyID, reinstall)
 	}
 	der, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {

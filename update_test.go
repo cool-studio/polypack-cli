@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,56 +10,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeReleases serves releases/latest/download/… as a redirect to tag, and
-// that release's binary and SHA256SUMS. lookups counts the redirects asked for.
-type fakeReleases struct {
-	server  *httptest.Server
-	tag     string
-	binary  []byte
-	sums    string
-	broken  bool
-	lookups atomic.Int32
-}
-
-func newFakeReleases(t *testing.T, tag string) *fakeReleases {
+// newFakeReleases is the CLI's releases, on a fake PolyPack (step 77: the
+// only source): `latest` is tag, and its binary and signed SHA256SUMS are
+// served (source_test.go's fakePolyPackCLI).
+func newFakeReleases(t *testing.T, tag string) *fakePolyPackCLI {
 	t.Helper()
-	f := &fakeReleases{tag: tag, binary: []byte("new polypack " + tag)}
-	sum := sha256.Sum256(f.binary)
-	f.sums = hex.EncodeToString(sum[:]) + "  " + assetName() + "\n" + strings.Repeat("0", 64) + "  polypack-plan9-amd64\n"
-	mux := http.NewServeMux()
-	mux.HandleFunc("/latest/download/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
-		f.lookups.Add(1)
-		if f.broken {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/cool-studio/polypack-cli/releases/download/"+f.tag+"/SHA256SUMS", http.StatusFound)
-	})
-	mux.HandleFunc("GET /download/{tag}/{file}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("tag") != f.tag {
-			http.NotFound(w, r)
-			return
-		}
-		switch r.PathValue("file") {
-		case "SHA256SUMS":
-			_, _ = io.WriteString(w, f.sums)
-		case assetName():
-			_, _ = w.Write(f.binary)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	f.server = httptest.NewServer(mux)
-	t.Cleanup(f.server.Close)
-	t.Setenv("POLYPACK_RELEASES_URL", f.server.URL)
-	// GitHub only: never the real PolyPack (step 75); source_test.go fakes it.
-	t.Setenv("POLYPACK_CLI_FILES_URL", "off")
-	return f
+	return newFakePolyPackCLI(t, map[string]string{"latest": strings.TrimPrefix(tag, "v")})
 }
 
 func setVersion(t *testing.T, v string) {
@@ -125,15 +83,15 @@ func TestParseVersionAndIsNewer(t *testing.T) {
 	}
 }
 
-func TestLatestReleaseReadsTheRedirect(t *testing.T) {
+func TestLatestFromPolyPackReadsTheChannel(t *testing.T) {
 	f := newFakeReleases(t, "v0.5.0")
-	tag, err := latestRelease(t.Context())
+	tag, err := latestFromPolyPack(t.Context(), "latest")
 	if err != nil || tag != "v0.5.0" {
-		t.Fatalf("latestRelease = %q, %v", tag, err)
+		t.Fatalf("latestFromPolyPack = %q, %v", tag, err)
 	}
 	f.broken = true
-	if _, err := latestRelease(t.Context()); err == nil {
-		t.Fatal("a failing server gave a release")
+	if _, err := latestFromPolyPack(t.Context(), "latest"); err == nil {
+		t.Fatal("a failing PolyPack gave a release")
 	}
 }
 
@@ -150,7 +108,7 @@ func TestUpdateReplacesTheBinary(t *testing.T) {
 		t.Errorf("stdout = %q", stdout.String())
 	}
 	data, _ := os.ReadFile(exe)
-	if string(data) != "new polypack v0.5.0" {
+	if string(data) != "polypack from PolyPack v0.5.0" {
 		t.Errorf("binary = %q", data)
 	}
 	if info, _ := os.Stat(exe); runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
@@ -171,7 +129,7 @@ func TestUpdateToAChosenVersion(t *testing.T) {
 	if code := run([]string{"update", "--version", "v0.3.0"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if data, _ := os.ReadFile(exe); string(data) != "new polypack v0.3.0" {
+	if data, _ := os.ReadFile(exe); string(data) != "polypack from PolyPack v0.3.0" {
 		t.Errorf("binary = %q", data)
 	}
 	if code := run([]string{"update", "--version", "latest"}, &stdout, &stderr); code != 1 {
@@ -180,13 +138,17 @@ func TestUpdateToAChosenVersion(t *testing.T) {
 }
 
 func TestUpdateRefusesABadChecksum(t *testing.T) {
+	want := map[string]string{
+		"mismatch": "checksum mismatch for " + assetName() + " v0.5.0",
+		"missing":  "v0.5.0 has no " + assetName() + "; not updating",
+	}
 	for name, sums := range map[string]string{
 		"mismatch": strings.Repeat("a", 64) + "  " + assetName() + "\n",
 		"missing":  strings.Repeat("a", 64) + "  polypack-plan9-amd64\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeReleases(t, "v0.5.0")
-			f.sums = sums
+			f.sums = sums // signed by the pinned key, but not what the binary is
 			setVersion(t, "v0.4.0")
 			exe := fakeExecutable(t)
 
@@ -194,7 +156,7 @@ func TestUpdateRefusesABadChecksum(t *testing.T) {
 			if code := run([]string{"update"}, &stdout, &stderr); code != 1 {
 				t.Fatalf("exit %d", code)
 			}
-			if !strings.Contains(stderr.String(), "checksum mismatch for "+assetName()+" v0.5.0; not updating") {
+			if !strings.Contains(stderr.String(), want[name]) {
 				t.Errorf("stderr = %q", stderr.String())
 			}
 			if data, _ := os.ReadFile(exe); string(data) != "old polypack" {
@@ -240,7 +202,7 @@ func TestUpdateRefusesADevBuild(t *testing.T) {
 
 // noticeSetup makes stderr a "terminal", with a fresh config directory and
 // none of the variables that turn the notice off.
-func noticeSetup(t *testing.T, tag string) (*fakeReleases, string) {
+func noticeSetup(t *testing.T, tag string) (*fakePolyPackCLI, string) {
 	t.Helper()
 	f := newFakeReleases(t, tag)
 	setVersion(t, "v0.4.0")
@@ -279,7 +241,7 @@ func TestNoticeOnceADay(t *testing.T) {
 	}
 
 	// A day on: asked again, and the cache rewritten.
-	f.tag = "v0.6.0"
+	f.channels["latest"] = "0.6.0"
 	old := now
 	now = func() time.Time { return time.Now().Add(25 * time.Hour) }
 	t.Cleanup(func() { now = old })
@@ -366,7 +328,7 @@ func TestNoticeNeverWaitsLong(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(hang.Close)
-	t.Setenv("POLYPACK_RELEASES_URL", hang.URL)
+	t.Setenv("POLYPACK_CLI_FILES_URL", hang.URL)
 
 	start := time.Now()
 	var stdout, stderr bytes.Buffer
